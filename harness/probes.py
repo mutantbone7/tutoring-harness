@@ -1,7 +1,9 @@
 """Gate 1 contamination probes (Section III-D) and the Gate 2 equating pilot
 (Section III-A). Both are single-turn: no teacher, no policy."""
 from __future__ import annotations
+import json
 import math
+import os
 import random
 from typing import Dict, List
 from .content.base import ContentSet, LABELS
@@ -9,7 +11,8 @@ from .parsing import parse_answer
 from .router import Router, Instance, spec_fingerprints
 from .telemetry import Telemetry
 
-PROBE_SYSTEM = "Answer the question. Finish with one final line of the form 'ANSWER: <letter>'."
+PROBE_SYSTEM = ("Answer the question. Keep any reasoning to a few sentences. Finish with one final line of the form "
+                "'ANSWER: <letter>' and write nothing after it. If your reasoning runs long, stop and give the answer line.")
 
 
 def wilson(k: int, n: int, z: float = 1.96):
@@ -28,8 +31,23 @@ def binom_pvalue_greater(k: int, n: int, p0: float) -> float:
     return float(binomtest(k, n, p0, alternative="greater").pvalue)
 
 
+def _already_done(telemetry: Telemetry, phase: str) -> List[Dict]:
+    """Rows of a previous, interrupted run of the same phase in the same run directory."""
+    import json, os
+    path = os.path.join(telemetry.dir, "telemetry.jsonl")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path) as f:
+        for line in f:
+            r = json.loads(line)
+            if r.get("phase") == phase:
+                rows.append(r)
+    return rows
+
+
 def run_probes(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int = 0, n: int = None,
-               system: str = PROBE_SYSTEM, phase: str = "probe") -> Dict:
+               system: str = PROBE_SYSTEM, phase: str = "probe", resume: bool = False) -> Dict:
     n = n or cfg.n_probes
     forbidden = spec_fingerprints(content.specification()) | {b"ANSWER KEY", b"KEY["}
     router = Router(client, forbidden)
@@ -39,9 +57,19 @@ def run_probes(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int
     per_comp: Dict[str, List[bool]] = {c.id: [] for c in comps}
     per_family: Dict[str, List[bool]] = {}
     served = None
+    done = _already_done(telemetry, phase) if resume else []
+    status_counts: Dict[str, int] = {}
+    for r in done:                      # restore counts from the interrupted run
+        status_counts[r["parse_status"]] = status_counts.get(r["parse_status"], 0) + 1
+        k += bool(r["correct"])
+        per_comp.setdefault(r["component"], []).append(bool(r["correct"]))
+        per_family.setdefault(r["family"], []).append(bool(r["correct"]))
+        served = r.get("student_model") or served
     for i in range(n):
         comp = comps[i % len(comps)]
-        item = content.sample_item(comp.id, rng)
+        item = content.sample_item(comp.id, rng)     # advances the item RNG identically on resume
+        if i < len(done):
+            continue
         inst = Instance(role="probe", label=f"probe{i}", seed=seed * 100000 + i, model=cfg.model, system=system)
         prompt, key, tagmap = item.render(inst.rng)
         comp_ = router.send(inst, prompt, cfg.answer_token_cap, meta={"key": key, "item_id": item.item_id})
@@ -51,6 +79,12 @@ def run_probes(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int
         k += correct
         per_comp[comp.id].append(correct)
         per_family.setdefault(item.family, []).append(correct)
+        status_counts[status] = status_counts.get(status, 0) + 1
+        with open(os.path.join(telemetry.dir, f"{phase}_responses.jsonl"), "a") as rf:
+            rf.write(json.dumps({"i": i, "item_id": item.item_id, "component": comp.id, "family": item.family,
+                                 "prompt": prompt, "response": comp_.text, "label": label, "status": status,
+                                 "correct": correct, "misconception": tagmap.get(label) if (label and not correct) else None,
+                                 "tokens_out": comp_.tokens_out}) + "\n")
         telemetry.log(seed=seed, generation=0, arm=phase, teacher_model=None, student_model=comp_.model,
                       content_set=content.name, tau=None, calibration_flag=None, component=comp.id,
                       item_id=item.item_id, family=item.family, held_out=False, correct=correct,
@@ -62,20 +96,23 @@ def run_probes(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int
     lo, hi = wilson(k, n)
     pval = binom_pvalue_greater(k, n, content.chance_level)
     at_floor = (acc <= cfg.probe_fail_threshold) and (pval >= cfg.probe_alpha)
+    failure_rate = status_counts.get("failure", 0) / n
     out = {"model": served or cfg.model, "content_set": content.name, "n": n, "correct": k, "accuracy": acc,
            "ci95": [lo, hi], "p_greater_than_chance": pval, "chance": content.chance_level,
-           "at_floor": at_floor, "per_component": {c: (sum(v) / len(v) if v else None) for c, v in per_comp.items()},
+           "at_floor": at_floor, "parse_status_counts": status_counts, "parse_failure_rate": failure_rate,
+           "valid": failure_rate <= 0.05,
+           "per_component": {c: (sum(v) / len(v) if v else None) for c, v in per_comp.items()},
            "per_family": {f: (sum(v) / len(v) if v else None) for f, v in per_family.items()},
            "isolation_violations": router.violations}
     telemetry.write_json(f"{phase}_{content.name}.json", out)
     return out
 
 
-def run_pilot(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int = 0, n: int = None) -> Dict:
+def run_pilot(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int = 0, n: int = None, resume: bool = False) -> Dict:
     """Equating pilot: the minimal instruction block, then single-turn items.
     Difficulty per family is 1 - accuracy and feeds Item.difficulty."""
     system = PROBE_SYSTEM + "\n\n" + content.instruction_block()
-    out = run_probes(client, content, cfg, telemetry, seed=seed, n=n, system=system, phase="pilot")
+    out = run_probes(client, content, cfg, telemetry, seed=seed, n=n, system=system, phase="pilot", resume=resume)
     out["difficulty_per_family"] = {f: (1 - a) if a is not None else None for f, a in out["per_family"].items()}
     telemetry.write_json(f"pilot_{content.name}.json", out)
     return out

@@ -286,9 +286,14 @@ Rule C6 (merge): two cairns merged with shares w and 1 - w in tenths and a tethe
 Common errors: using the starting stride count for every pulse; ignoring the leak; counting cycles as height over drain; merging without the tether.
 """
 
-INSTRUCTION_Y = """You will answer multiple-choice questions about cairns: whole-number heights that change by pulses, leaks, drains and merges.
-A pulse raises a height by its stride and by one more mark for each full stride in the height. A leak removes marks after a pulse.
-A drain is a fixed loss after each pulse. A merge combines two cairns using shares and a tether. Answer each question with a single letter."""
+INSTRUCTION_Y = """You will answer multiple-choice questions about cairns. A cairn has a whole-number height in marks and a whole-number stride; some cairns also have a leak.
+Pulse: one pulse raises the height by the stride plus one mark for every full stride contained in the current height; a height of 20 with stride 6 becomes 20 + 6 + 3 = 29.
+Repeated pulses: apply the pulse rule once per pulse, recounting the full strides from the new height each time.
+Leak: after a pulse, a cairn with leak d loses one mark for every d marks in its new pulsed height, rounding down.
+Origin: the height after a given number of pulses fixes the starting height uniquely; find the starting height that produces the stated height.
+Drain: each cycle is one pulse followed by removing a fixed drain; count the cycles until the height first reaches zero or below.
+Merge: two cairns with heights q1 and q2, a share w in tenths and a tether b merge to floor(w q1 / 10) + floor((10 - w) q2 / 10) + b times floor(min(q1, q2) / 10).
+Answer each question with a single letter."""
 
 
 class YContentSet(ContentSet):

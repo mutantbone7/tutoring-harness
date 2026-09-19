@@ -16,7 +16,8 @@ from .router import Router, Instance
 from .telemetry import Telemetry
 
 STUDENT_SYSTEM = ("You are a learner in a tutoring session. Read what your tutor explains, then answer each "
-                  "question. Always finish with one final line of the form 'ANSWER: <letter>'.")
+                  "question. Keep any reasoning to a few sentences. Always finish with one final line of the form "
+                  "'ANSWER: <letter>' and write nothing after it. If your reasoning runs long, stop and give the answer line.")
 TEACHER_SYSTEM = ("You are a tutor. Teach the topic you are asked to teach from your own understanding, in your "
                   "own words, for a learner who has never seen it. Do not state answers to specific test questions. ")
 FEEDBACK = {True: "Your previous answer was correct.", False: "Your previous answer was not correct."}

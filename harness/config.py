@@ -18,7 +18,7 @@ class Config:
     session_cap: int = 60                    # L, interactions per session      GATE 3
     summary_token_cap: int = 600             # B_sigma, Algorithm 2 line 14     GATE 3
     teach_token_cap: int = 500               # teacher explanatory turn length  GATE 3
-    answer_token_cap: int = 300              # student answer length
+    answer_token_cap: int = 2500             # reply cap; 300 truncated 36% of Y probe replies and 1500 truncated 6.4% of Y pilot replies (2026-09-19)
     persistence_items: int = 6               # items per persistence proxy      GATE 3
     n_probes: int = 500                      # Gate 1 probes per model per set
     probe_fail_threshold: float = 0.30       # Gate 1: accuracy above this fails

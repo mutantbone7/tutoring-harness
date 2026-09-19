@@ -337,9 +337,13 @@ Common errors: treating compound growth as linear; confusing nominal with real a
 """
 
 INSTRUCTION_R = """You will answer numerical multiple-choice questions about interest, inflation, debt and investment risk.
-Interest can be simple or compounded. Inflation reduces what money buys. A future amount is worth less today.
-A fixed payment on a balance that charges interest takes longer than the balance divided by the payment.
-A portfolio's risk depends on how its assets move together. Answer each question with a single letter."""
+Simple interest: one year's interest on principal P at rate r percent is P times r/100.
+Compound interest: P at r percent compounded annually for t years grows to P times (1 + r/100) to the power t.
+Inflation: money that grows by r percent buys (1 + r/100)/(1 + i/100) times as much after one year when prices rise by i percent.
+Present value: an amount F due in t years is worth F divided by (1 + r/100) to the power t today.
+Revolving debt: a balance B at monthly rate m = APR/1200 with fixed payment M is repaid after n = -ln(1 - mB/M)/ln(1 + m) months.
+Portfolio risk: with weights w and 1 - w, deviations s1 and s2 and correlation rho, the portfolio deviation is the square root of (w s1)^2 + ((1 - w) s2)^2 + 2 w (1 - w) rho s1 s2.
+Answer each question with a single letter."""
 
 
 class FinanceContentSet(ContentSet):
