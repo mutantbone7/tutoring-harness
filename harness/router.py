@@ -72,6 +72,7 @@ class Router:
         inst.messages.append({"role": "assistant", "content": comp.text})
         inst.served_model = comp.model
         self.turn_log.append({"to": inst.label, "role": inst.role, "tokens_in": comp.tokens_in,
-                              "tokens_out": comp.tokens_out, "latency_ms": comp.latency_ms,
+                              "tokens_out": comp.tokens_out, "cache_read": getattr(comp, "cache_read", 0),
+                              "cache_write": getattr(comp, "cache_write", 0), "latency_ms": comp.latency_ms,
                               "retries": comp.retries, "model": comp.model})
         return comp

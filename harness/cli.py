@@ -22,7 +22,7 @@ def make_client(cfg: Config, fake: bool):
         from .client import FakeClient
         return FakeClient(model=cfg.model)
     from .client import ModelClient
-    return ModelClient(cfg.model, cfg.max_retries)
+    return ModelClient(cfg.model, cfg.max_retries, cfg.prompt_caching)
 
 
 def _run_id(prefix: str) -> str:
@@ -46,6 +46,12 @@ def main(argv=None) -> None:
     p = sub.add_parser("inspect"); p.add_argument("--run", required=True, help="a run directory under the output dir")
     p = sub.add_parser("sweep"); p.add_argument("--sets", nargs="+", required=True); p.add_argument("--seeds", nargs="+", type=int, required=True)
     p.add_argument("--taus", nargs="*", type=float)
+    p.add_argument("--calibration", choices=["on", "off", "both"], default="both")
+    p.add_argument("--workers", type=int, default=None, help="parallel sessions (default: Config.concurrency)")
+    p.add_argument("--tag", default="sweep", help="run-directory prefix (e.g. bootstrap, dense, replication)")
+    p.add_argument("--generations", type=int, default=None, help="override Config.generations (dense sweep uses 1)")
+    p.add_argument("--learner", default=None, help="calibrated learner: 'bkt' or a GBDT .pkl path")
+    p.add_argument("--learner-uncalibrated", default=None, help="uncalibrated learner: 'bkt' or a GBDT .pkl path")
     a = ap.parse_args(argv)
 
     cfg = Config.load(a.config) if a.config else Config()
@@ -108,19 +114,56 @@ def main(argv=None) -> None:
         for r in res:
             print(json.dumps(r))
     elif a.cmd == "sweep":
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from .chain import run_chain
         taus = a.taus or cfg.taus
+        if a.generations:
+            cfg.generations = a.generations
+        if a.learner:
+            cfg.learner = a.learner
+        if a.learner_uncalibrated:
+            cfg.learner_uncalibrated = a.learner_uncalibrated
+        cal_levels = {"on": (True,), "off": (False,), "both": (True, False)}[a.calibration]
+        cells = []
         for si, name in enumerate(a.sets):
-            content = load_content(name)
             for tau in taus:
-                for calibrated in (True, False):
+                for calibrated in cal_levels:
                     for seed in a.seeds:
-                        rid = f"sweep-{name}-tau{tau}-{'cal' if calibrated else 'uncal'}-s{seed}"
-                        tel = Telemetry(cfg.output_dir, rid)
-                        cfg.save(os.path.join(tel.dir, "config.json"))
-                        res = run_chain(client, content, cfg, tau, seed, calibrated, tel, set_index=si)
-                        tel.close()
-                        print(rid, "done;", len(res), "sessions")
+                        rid = f"{a.tag}-{name}-tau{tau}-{'cal' if calibrated else 'uncal'}-s{seed}"
+                        if os.path.exists(os.path.join(cfg.output_dir, rid, "run_summary.json")):
+                            print(rid, "already complete; skipped")
+                            continue
+                        cells.append((rid, name, si, tau, calibrated, seed))
+        print(f"{len(cells)} cells to run, {a.workers or cfg.concurrency} in parallel")
+
+        def run_cell(cell):
+            rid, name, si, tau, calibrated, seed = cell
+            content = load_content(name)
+            import shutil
+            d = os.path.join(cfg.output_dir, rid)
+            if os.path.exists(d):
+                shutil.rmtree(d)              # a partial cell is restarted from its first session
+            tel = Telemetry(cfg.output_dir, rid)
+            cfg.save(os.path.join(tel.dir, "config.json"))
+            try:
+                res = run_chain(client, content, cfg, tau, seed, calibrated, tel, set_index=si)
+            finally:
+                tel.close()
+            return rid, len(res)
+
+        workers = 1 if a.fake else (a.workers or cfg.concurrency)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(run_cell, c) for c in cells]
+            for f in as_completed(futures):
+                try:
+                    rid, n = f.result()
+                    print(rid, "done;", n, "sessions", flush=True)
+                except Exception as e:
+                    print("CELL FAILED:", e, flush=True)
+        if not a.fake:
+            print(json.dumps({"tokens_in": client.total_in, "tokens_out": client.total_out,
+                              "cache_read": client.total_cache_read, "cache_write": client.total_cache_write,
+                              "retries": client.total_retries}))
 
 
 if __name__ == "__main__":

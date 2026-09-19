@@ -56,9 +56,10 @@ def present(router: Router, student: Instance, item: Item, preface: str, cap: in
 
 
 def run_session(router: Router, teacher: Instance, student: Instance, content: ContentSet, tau: float,
-                learner: LearnerModel, cfg, telemetry: Telemetry, base: Dict, n_assess: int = 4) -> Dict:
+                learner: LearnerModel, cfg, telemetry: Telemetry, base: Dict, n_assess: int = None) -> Dict:
     """Returns a summary dict: outcome, interactions, mastered components,
     items-to-mastery per component (None if censored), post and transfer accuracy."""
+    n_assess = n_assess or getattr(cfg, "n_assess", 4)
     student.system = STUDENT_SYSTEM
     if not teacher.system:
         teacher.system = TEACHER_SYSTEM

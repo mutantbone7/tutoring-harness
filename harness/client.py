@@ -18,19 +18,37 @@ class Completion:
     tokens_out: int
     latency_ms: int
     retries: int
+    cache_read: int = 0
+    cache_write: int = 0
 
 
 class ModelClient:
-    def __init__(self, model: str, max_retries: int = 8):
+    """Thread-safe: one instance may be shared by parallel sessions."""
+
+    def __init__(self, model: str, max_retries: int = 8, prompt_caching: bool = True):
         from anthropic import Anthropic  # imported here so tests can run without the SDK
+        import threading
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise RuntimeError("ANTHROPIC_API_KEY is not set in the environment")
         self._client = Anthropic(max_retries=0)  # the harness owns retry logic and counts it
         self.model = model
         self.max_retries = max_retries
-        self.total_in = 0
-        self.total_out = 0
-        self.total_retries = 0
+        self.prompt_caching = prompt_caching
+        self._lock = threading.Lock()
+        self.total_in = self.total_out = self.total_retries = 0
+        self.total_cache_read = self.total_cache_write = 0
+
+    def _payload(self, system: str, messages: List[Dict[str, str]]):
+        """With caching on, the system prompt and the latest user turn carry
+        cache breakpoints, so the growing conversation prefix is read from
+        cache on every turn instead of being re-billed in full."""
+        if not self.prompt_caching:
+            return system, messages
+        sys_blocks = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}] if system else system
+        msgs = [dict(m) for m in messages]
+        last = msgs[-1]
+        msgs[-1] = {"role": last["role"], "content": [{"type": "text", "text": last["content"], "cache_control": {"type": "ephemeral"}}]}
+        return sys_blocks, msgs
 
     def complete(self, system: str, messages: List[Dict[str, str]], max_tokens: int, meta: Optional[Dict] = None) -> Completion:
         """`meta` is harness-side bookkeeping (never sent to the API)."""
@@ -39,17 +57,31 @@ class ModelClient:
         while True:
             t0 = time.time()
             try:
-                resp = self._client.messages.create(
-                    model=self.model, max_tokens=max_tokens, system=system, messages=messages,
-                )
+                sys_payload, msg_payload = self._payload(system, messages)
+                kwargs = {"model": self.model, "max_tokens": max_tokens, "messages": msg_payload}
+                if sys_payload:
+                    kwargs["system"] = sys_payload
+                resp = self._client.messages.create(**kwargs)
                 latency = int((time.time() - t0) * 1000)
                 text = "".join(getattr(b, "text", "") for b in resp.content)
-                self.total_in += resp.usage.input_tokens
-                self.total_out += resp.usage.output_tokens
-                return Completion(text, resp.model, resp.usage.input_tokens, resp.usage.output_tokens, latency, attempt)
+                u = resp.usage
+                cr = getattr(u, "cache_read_input_tokens", 0) or 0
+                cw = getattr(u, "cache_creation_input_tokens", 0) or 0
+                with self._lock:
+                    self.total_in += u.input_tokens
+                    self.total_out += u.output_tokens
+                    self.total_cache_read += cr
+                    self.total_cache_write += cw
+                return Completion(text, resp.model, u.input_tokens, u.output_tokens, latency, attempt, cr, cw)
+            except anthropic.BadRequestError as e:
+                if self.prompt_caching and "cache_control" in str(e):
+                    self.prompt_caching = False       # provider rejected caching; continue without it
+                    continue
+                raise
             except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError) as e:
                 attempt += 1
-                self.total_retries += 1
+                with self._lock:
+                    self.total_retries += 1
                 if attempt > self.max_retries:
                     raise RuntimeError(f"giving up after {attempt} attempts: {e}") from e
                 time.sleep(min(60.0, (2 ** attempt) + random.random()))

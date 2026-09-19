@@ -84,7 +84,9 @@ def run_chain(client, content: ContentSet, cfg, tau: float, seed: int, calibrate
         T_prev = T_n
     telemetry.write_json("run_summary.json", {"results": results, "isolation_violations": router.violations,
                                               "turns": router.turn_log,
-                                              "tokens_in": getattr(client, "total_in", None),
-                                              "tokens_out": getattr(client, "total_out", None),
-                                              "retries": getattr(client, "total_retries", None)})
+                                              "tokens_in": sum(t["tokens_in"] for t in router.turn_log),
+                                              "tokens_out": sum(t["tokens_out"] for t in router.turn_log),
+                                              "cache_read": sum(t.get("cache_read", 0) for t in router.turn_log),
+                                              "cache_write": sum(t.get("cache_write", 0) for t in router.turn_log),
+                                              "retries": sum(t["retries"] for t in router.turn_log)})
     return results
