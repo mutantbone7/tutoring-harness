@@ -1,5 +1,25 @@
 """Algorithm 2: chain runner with transmission controls, line for line, plus
-the persistence proxies of Section V-D run on every student instance."""
+the persistence proxies of Section V-D run on every student instance.
+
+What ran in the study (version 1) and what changed in version 2:
+
+  * The teacher at generation n is a FRESH instance of the base model whose
+    system prompt carries the generation-(n-1) chain student's summary
+    sigma_{n-1} (line 15). It is not the promoted student instance itself;
+    the first submission described it loosely as "promoted" (reviewer 2,
+    item 4b). Nothing changed here; the description in the paper did.
+  * Version 1 requested sigma_n AFTER the post-test, so a summary could
+    reflect what the student inferred from post-test items (reviewer 2,
+    item 4g). Version 2 requests it before the post-test when
+    Config.summary_before_posttest is True (default). Set it to False to
+    reproduce the study as run.
+  * Version 1 passed the CHAIN student's summary to the REFERENCE student's
+    boundary probe (reviewer 2, item 7a). Version 2 has the reference
+    student write its own summary (Config.reference_summary, default True)
+    and uses that; both summaries are logged.
+  * Config.policy == "fixed" runs the non-adaptive fixed-sequence control
+    (Section IV-E) in place of Algorithm 1 in both arms.
+"""
 from __future__ import annotations
 from typing import Dict, List
 from .content.base import ContentSet
@@ -37,11 +57,12 @@ def assert_clean(text: str, forbidden, label: str) -> None:
 
 def persistence_probes(router: Router, student: Instance, sigma: str, content: ContentSet, cfg, telemetry: Telemetry,
                        base: Dict, first_mastered: str, model: str, seed: int) -> None:
-    """Three proxies, reported jointly (Section V-D, decision recorded before Gate 3)."""
+    """Three proxies, reported jointly (Section V-D, decision recorded before Gate 3).
+    `sigma` must be the summary written by THIS student (v2)."""
     h = History()
     m = cfg.persistence_items
     comp = first_mastered or content.topo_order()[0]
-    for _ in range(m):    # (a) context-distance: the earliest-taught component, re-tested at the far end of the context
+    for _ in range(m):    # (a) context-distance: the earliest-mastered component, re-tested at the far end of the context
         present(router, student, content.sample_item(comp, student.rng), "", cfg.answer_token_cap, telemetry, base, "persist_distance", h, None)
     fresh = Instance(role="student", label=student.label + "-boundary", seed=seed + 400, model=model,
                      system=student.system + "\n\nYour notes from a previous session:\n" + sigma)
@@ -60,26 +81,39 @@ def run_chain(client, content: ContentSet, cfg, tau: float, seed: int, calibrate
     router = Router(client, forbidden)
     M = cfg.model
     results = []
+    before = getattr(cfg, "summary_before_posttest", True)
+    ref_own = getattr(cfg, "reference_summary", True)
+
+    def summarise(student: Instance) -> str:
+        return router.send(student, SUMMARY_PROMPT, cfg.summary_token_cap).text
+
     T_prev = instantiate("teacher", "T0", seed, M, context=sigma_spec)              # line 1
     for n in range(1, cfg.generations + 1):                                          # line 2
         cond = {"set_index": set_index, "tau": tau, "calibration_flag": calibrated, "generation": n, "arm_index": 0}
         base = {"seed": seed, "generation": n, "arm": "chain", "teacher_model": M, "content_set": content.name,
                 "tau": tau, "calibration_flag": calibrated, "_condition": cond}
         S_n = instantiate("student", f"S{n}", seed + n, M)                            # line 4
-        res = run_session(router, T_prev, S_n, content, tau, make_learner(cfg, calibrated), cfg, telemetry, base)   # line 5
+        res = run_session(router, T_prev, S_n, content, tau, make_learner(cfg, calibrated), cfg, telemetry, base,
+                          before_posttest=summarise if before else None)              # line 5
         router.check_isolation(S_n)                                                   # line 6
-        results.append({"arm": "chain", "generation": n, **{k: v for k, v in res.items() if k != "history"}})   # line 7
+        results.append({"arm": "chain", "generation": n, **{k: v for k, v in res.items() if k not in ("history", "sigma")}})   # line 7
         R_n = instantiate("teacher", f"R{n}", seed + 100 + n, M, context=sigma_spec) # line 9
         S_pn = instantiate("student", f"Sprime{n}", seed + 200 + n, M)                # line 10
         base_r = dict(base, arm="reference", _condition=dict(cond, arm_index=1))
-        res_r = run_session(router, R_n, S_pn, content, tau, make_learner(cfg, calibrated), cfg, telemetry, base_r)  # line 11
-        results.append({"arm": "reference", "generation": n, **{k: v for k, v in res_r.items() if k != "history"}})  # line 12
-        sigma_n = router.send(S_n, SUMMARY_PROMPT, cfg.summary_token_cap).text       # line 14
-        telemetry.write_json(f"sigma_gen{n}.json", {"generation": n, "sigma": sigma_n})
+        res_r = run_session(router, R_n, S_pn, content, tau, make_learner(cfg, calibrated), cfg, telemetry, base_r,
+                            before_posttest=(summarise if (before and ref_own) else None))  # line 11
+        results.append({"arm": "reference", "generation": n, **{k: v for k, v in res_r.items() if k not in ("history", "sigma")}})  # line 12
+        sigma_n = res["sigma"] if before else summarise(S_n)                          # line 14
+        telemetry.write_json(f"sigma_gen{n}.json", {"generation": n, "sigma": sigma_n, "written_before_posttest": before})
+        if ref_own:
+            sigma_r = res_r["sigma"] if before else summarise(S_pn)
+            telemetry.write_json(f"sigma_ref_gen{n}.json", {"generation": n, "sigma": sigma_r, "written_before_posttest": before})
+        else:
+            sigma_r = sigma_n                                                         # the version-1 behaviour (bug)
         T_n = instantiate("teacher", f"T{n}", seed + 300 + n, M, context=sigma_n)    # line 15
         assert_clean(T_n.system, forbidden, f"T{n}")                                  # line 16
         persistence_probes(router, S_n, sigma_n, content, cfg, telemetry, base, res["first_mastered"], M, seed)      # line 17
-        persistence_probes(router, S_pn, sigma_n, content, cfg, telemetry, base_r, res_r["first_mastered"], M, seed + 200)
+        persistence_probes(router, S_pn, sigma_r, content, cfg, telemetry, base_r, res_r["first_mastered"], M, seed + 200)
         telemetry.write_transcript(f"gen{n}", [T_prev, S_n, R_n, S_pn, T_n])
         T_prev = T_n
     telemetry.write_json("run_summary.json", {"results": results, "isolation_violations": router.violations,
@@ -88,5 +122,7 @@ def run_chain(client, content: ContentSet, cfg, tau: float, seed: int, calibrate
                                               "tokens_out": sum(t["tokens_out"] for t in router.turn_log),
                                               "cache_read": sum(t.get("cache_read", 0) for t in router.turn_log),
                                               "cache_write": sum(t.get("cache_write", 0) for t in router.turn_log),
-                                              "retries": sum(t["retries"] for t in router.turn_log)})
+                                              "retries": sum(t["retries"] for t in router.turn_log),
+                                              "summary_before_posttest": before, "reference_summary": ref_own,
+                                              "policy": getattr(cfg, "policy", "mastery")})
     return results

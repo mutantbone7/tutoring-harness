@@ -24,8 +24,15 @@ class Policy:
         self.mastered: set = set()
         self.review_queue: List[Tuple[int, str]] = []   # (due position, component)
 
+    def _p(self, h: History, c: str) -> float:
+        """f(features(h, c)) with the next item's family and pilot difficulty
+        (v2; the study as run passed the previous item's family and 0.5)."""
+        fam = self.content.next_family(c)
+        return self.f.predict(h, c, self.graph, self.condition,
+                              next_difficulty=self.content.family_difficulty(fam), next_family=fam)
+
     def decide(self, h: History, c: str) -> Action:
-        p = self.f.predict(h, c, self.graph, self.condition)          # line 1
+        p = self._p(h, c)                                             # line 1
         if p >= self.tau:                                             # line 2
             self.mastered.add(c)                                      # line 3
             h.mastered = sorted(self.mastered)
@@ -39,7 +46,7 @@ class Policy:
             return Action("TERMINATE", reason="mastered", p=p)        # line 8
         for q in self.topo:                                           # lines 9-10
             if q in self.graph[c].prerequisites:
-                if self.f.predict(h, q, self.graph, self.condition) < self.tau:      # line 11
+                if self._p(h, q) < self.tau:                          # line 11
                     return Action("REMEDIATE", q, p=p)
         if h.attempts(c) >= self.A_max:                               # line 12
             return Action("TERMINATE", c, reason="non-mastery", p=p)

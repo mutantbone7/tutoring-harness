@@ -55,10 +55,60 @@ def present(router: Router, student: Instance, item: Item, preface: str, cap: in
     return inter
 
 
+def run_fixed_session(router: Router, teacher: Instance, student: Instance, content: ContentSet, cfg,
+                      telemetry: Telemetry, base: Dict, n_assess: int = None, items_per_component: int = None,
+                      before_posttest=None) -> Dict:
+    """Non-adaptive fixed-sequence control (Section IV-E, v2): the teacher
+    explains every component in topological order; after each explanation the
+    student answers a fixed number of items of that component with the usual
+    correct/not-correct feedback; no learner-model estimate is consulted and
+    nothing is declared mastered. The post-test is identical to run_session's.
+    The item count per component is fixed in advance (Config.fixed_items)."""
+    n_assess = n_assess or getattr(cfg, "n_assess", 4)
+    k = items_per_component or getattr(cfg, "fixed_items", 2)
+    student.system = STUDENT_SYSTEM
+    if not teacher.system:
+        teacher.system = TEACHER_SYSTEM
+    base = dict(base)
+    h = History()
+    feedback = ""
+    for c in content.topo_order():
+        preface = teach(router, teacher, content.graph()[c].name, cfg.teach_token_cap)
+        for _ in range(k):
+            item = content.sample_item(c, student.rng)
+            pre = (feedback + "\n\n" + preface).strip() if (feedback or preface) else ""
+            present(router, student, item, pre, cfg.answer_token_cap, telemetry, base, "instruction", h, None, "FIXED", None)
+            feedback, preface = FEEDBACK[h.interactions[-1].correct], ""
+    sigma = before_posttest(student) if before_posttest is not None else None
+    post, transfer = [], []
+    for comp in content.components():
+        for _ in range(n_assess):
+            i = present(router, student, content.sample_item(comp.id, student.rng), "", cfg.answer_token_cap, telemetry, base, "post", h, None)
+            post.append(i.correct)
+        if content.held_out_families(comp.id):
+            for _ in range(n_assess):
+                i = present(router, student, content.sample_item(comp.id, student.rng, held_out=True), "", cfg.answer_token_cap, telemetry, base, "transfer", h, None)
+                transfer.append(i.correct)
+    return {"outcome": "fixed", "interactions": len(h.interactions), "mastered": [],
+            "items_to_mastery": {comp.id: None for comp in content.components()}, "first_mastered": None,
+            "post_accuracy": sum(post) / len(post) if post else None,
+            "transfer_accuracy": sum(transfer) / len(transfer) if transfer else None, "history": h, "sigma": sigma}
+
+
 def run_session(router: Router, teacher: Instance, student: Instance, content: ContentSet, tau: float,
-                learner: LearnerModel, cfg, telemetry: Telemetry, base: Dict, n_assess: int = None) -> Dict:
+                learner: LearnerModel, cfg, telemetry: Telemetry, base: Dict, n_assess: int = None,
+                before_posttest=None) -> Dict:
     """Returns a summary dict: outcome, interactions, mastered components,
-    items-to-mastery per component (None if censored), post and transfer accuracy."""
+    items-to-mastery per component (None if censored), post and transfer accuracy.
+
+    What a session contains (stated here because reviewers asked): one TEACH
+    turn per component when the policy advances or remediates to it, capped at
+    cfg.teach_token_cap tokens; multiple-choice items with the feedback
+    template "correct" / "not correct" and no teacher response to errors; a
+    post-test of n_assess items per component in the same context, plus
+    n_assess held-out items for each component that has a held-out family."""
+    if getattr(cfg, "policy", "mastery") == "fixed":
+        return run_fixed_session(router, teacher, student, content, cfg, telemetry, base, n_assess, before_posttest=before_posttest)
     n_assess = n_assess or getattr(cfg, "n_assess", 4)
     student.system = STUDENT_SYSTEM
     if not teacher.system:
@@ -97,6 +147,9 @@ def run_session(router: Router, teacher: Instance, student: Instance, content: C
         next_item_component, phase = c, "instruction"
     for comp in content.components():
         items_to_mastery.setdefault(comp.id, None)     # censored at cap / non-mastery
+    sigma = None
+    if before_posttest is not None:
+        sigma = before_posttest(student)                # v2: the summary is written before the post-test
     # post-session assessment: instructed families (acquisition) and held-out families (transfer)
     post, transfer = [], []
     for comp in content.components():
@@ -113,4 +166,4 @@ def run_session(router: Router, teacher: Instance, student: Instance, content: C
             "items_to_mastery": items_to_mastery, "first_mastered": first_mastered,
             "post_accuracy": sum(post) / len(post) if post else None,
             "transfer_accuracy": sum(transfer) / len(transfer) if transfer else None,
-            "history": h}
+            "history": h, "sigma": sigma}

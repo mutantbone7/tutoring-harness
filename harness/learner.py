@@ -50,9 +50,17 @@ class History:
         return sum(1 for i in self.interactions if i.component == c and i.correct)
 
 
+N_CONDITION_BLIND = 17          # the first five groups of Table 6 (everything before set_index)
+
+
 def features(h: History, c: str, graph, condition: Dict, kc_index: Dict[str, int],
-             family_index: Dict[str, int], next_difficulty: float = 0.5) -> List[float]:
-    """Table 6 feature vector for the next item of component c."""
+             family_index: Dict[str, int], next_difficulty: float = 0.5, next_family: str = None) -> List[float]:
+    """Table 6 feature vector for the next item of component c.
+
+    v2 notes. `next_family` is the family the next item is drawn from; when it
+    is None the feature falls back to the family of the previous item, which
+    is what the study as run computed (reviewer 2, item 2e). `next_difficulty`
+    is the pilot difficulty of that family; the study as run passed 0.5."""
     n = len(h.interactions)
     att, suc = h.attempts(c), h.successes(c)
     prereqs = graph[c].prerequisites
@@ -67,7 +75,7 @@ def features(h: History, c: str, graph, condition: Dict, kc_index: Dict[str, int
         latency_z = (lat[-1] - mu) / sd
     else:
         latency_z = 0.0
-    fam = h.interactions[-1].family if h.interactions else ""
+    fam = next_family if next_family is not None else (h.interactions[-1].family if h.interactions else "")
     return [
         att, suc, (suc / att) if att else 0.5, att_p, suc_p,
         since, since - 1, n,
@@ -117,13 +125,19 @@ class BKTLearner(LearnerModel):
 class GBDTLearner(LearnerModel):
     name = "gbdt"
 
-    def __init__(self, model, calibrator=None, kc_index=None, family_index=None):
+    def __init__(self, model, calibrator=None, kc_index=None, family_index=None, condition_features: bool = True):
         self.model, self.calibrator = model, calibrator
         self.kc_index, self.family_index = kc_index or {}, family_index or {}
+        # True: all six groups of Table 6 (the study as run). False: the first
+        # five groups only, so that tau, calibration, generation and arm cannot
+        # enter the policy's estimate (v2 default for new training).
+        self.condition_features = condition_features
 
-    def predict(self, h: History, c: str, graph, condition: Dict, next_difficulty: float = 0.5, **kw) -> float:
-        x = [features(h, c, graph, condition, self.kc_index, self.family_index, next_difficulty)]
-        p = float(self.model.predict_proba(x)[0, 1])
+    def predict(self, h: History, c: str, graph, condition: Dict, next_difficulty: float = 0.5, next_family: str = None, **kw) -> float:
+        x = features(h, c, graph, condition, self.kc_index, self.family_index, next_difficulty, next_family)
+        if not getattr(self, "condition_features", True):
+            x = x[:N_CONDITION_BLIND]
+        p = float(self.model.predict_proba([x])[0, 1])
         if self.calibrator is not None:
             p = float(self.calibrator.transform([p])[0]) if hasattr(self.calibrator, "transform") \
                 else float(self.calibrator.predict_proba([[p]])[0, 1])
@@ -142,10 +156,19 @@ class GBDTLearner(LearnerModel):
 
 
 def train_gbdt(X: Sequence[Sequence[float]], y: Sequence[int], X_cal=None, y_cal=None,
-               calibration: Optional[str] = None, kc_index=None, family_index=None) -> GBDTLearner:
+               calibration: Optional[str] = None, kc_index=None, family_index=None,
+               condition_features: bool = True, platt_penalty: Optional[str] = "l2") -> GBDTLearner:
     """Fit the GBDT and, if requested, a Platt or isotonic map on held-out data.
-    Splits must be made by student instance by the caller (Section IV-E)."""
+    Splits must be made by student instance by the caller (Section IV-E).
+
+    `platt_penalty`: "l2" reproduces the study as run (scikit-learn's default
+    L2-penalised logistic regression, C = 1, which on 145 calibration
+    exchanges capped the map at 0.923); None fits the unpenalised map.
+    `condition_features=False` drops the condition group before fitting."""
     from sklearn.ensemble import HistGradientBoostingClassifier
+    if not condition_features:
+        X = [list(x)[:N_CONDITION_BLIND] for x in X]
+        X_cal = [list(x)[:N_CONDITION_BLIND] for x in X_cal] if X_cal is not None else None
     model = HistGradientBoostingClassifier(max_depth=4, learning_rate=0.05, max_iter=300)
     model.fit(X, y)
     cal = None
@@ -153,13 +176,14 @@ def train_gbdt(X: Sequence[Sequence[float]], y: Sequence[int], X_cal=None, y_cal
         raw = model.predict_proba(X_cal)[:, 1]
         if calibration == "platt":
             from sklearn.linear_model import LogisticRegression
-            cal = LogisticRegression().fit(raw.reshape(-1, 1), y_cal)
+            # C = 1e12 is the unpenalised fit written in a form every scikit-learn version accepts
+            cal = (LogisticRegression() if platt_penalty == "l2" else LogisticRegression(C=1e12, max_iter=1000)).fit(raw.reshape(-1, 1), y_cal)
         elif calibration == "isotonic":
             from sklearn.isotonic import IsotonicRegression
             cal = IsotonicRegression(out_of_bounds="clip").fit(raw, y_cal)
         else:
             raise ValueError(calibration)
-    return GBDTLearner(model, cal, kc_index, family_index)
+    return GBDTLearner(model, cal, kc_index, family_index, condition_features)
 
 
 def ece(probs: Sequence[float], labels: Sequence[int], bins: int = 10) -> float:

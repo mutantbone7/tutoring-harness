@@ -84,7 +84,8 @@ def run_probes(client, content: ContentSet, cfg, telemetry: Telemetry, seed: int
             rf.write(json.dumps({"i": i, "item_id": item.item_id, "component": comp.id, "family": item.family,
                                  "prompt": prompt, "response": comp_.text, "label": label, "status": status,
                                  "correct": correct, "misconception": tagmap.get(label) if (label and not correct) else None,
-                                 "tokens_out": comp_.tokens_out}) + "\n")
+                                 "tokens_out": comp_.tokens_out, "stop_reason": getattr(comp_, "stop_reason", ""),
+                                 "block_types": getattr(comp_, "block_types", "")}) + "\n")
         telemetry.log(seed=seed, generation=0, arm=phase, teacher_model=None, student_model=comp_.model,
                       content_set=content.name, tau=None, calibration_flag=None, component=comp.id,
                       item_id=item.item_id, family=item.family, held_out=False, correct=correct,

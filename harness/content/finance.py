@@ -1,5 +1,6 @@
-"""DRAFT content sets R (real financial surface and structure) and S (real
-structure, renewed surface), for the author to review and freeze at Gate 0.
+"""Content sets R (real financial surface and structure) and S (real
+structure, renewed surface). Frozen at Gate 0 in commit 814ddc1; the
+"DRAFT" labels of version 1 were review-stage labels and were removed in version 2.
 
 R draws its components from what the Big Three and Big Five (Lusardi and
 Mitchell), the PISA financial literacy framework and the FINRA survey test:
@@ -16,8 +17,8 @@ and the same oracle functions, so its isomorphism to R holds by construction
 (Section III-B). Items are numeric so that a frontier model is not at
 ceiling by recall alone; the Gate 2 pilot decides whether headroom exists.
 
-Nothing here is frozen. The author reviews every family against the
-instruments, adjusts, commits, and records the hash in the manuscript.
+The author reviewed every family against the instruments before the freeze;
+the commit hash is recorded in the manuscript.
 """
 from __future__ import annotations
 import math
@@ -326,7 +327,7 @@ class PresentValueOfRealAmount(NumericFamily):
 # ----------------------------------------------------------------------------
 # Specification and instruction text (shared structure, surface-mapped).
 # ----------------------------------------------------------------------------
-SPEC_R = """SPECIFICATION: personal-finance rule system (DRAFT, not frozen)
+SPEC_R = """SPECIFICATION: personal-finance rule system
 Rule C1 (simple interest): interest for one year on a principal P at rate r percent is P times r divided by 100.
 Rule C2 (compound interest): a principal P at rate r percent compounded annually for t years grows to P times (1 + r/100) to the power t; interest earned in each year is added to the principal before the next year's interest is computed.
 Rule C3 (inflation and real return): if prices rise by i percent per year, money that grows by r percent buys (1 + r/100) divided by (1 + i/100) times as much after one year; nominal growth and real growth are different quantities.

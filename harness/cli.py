@@ -21,6 +21,9 @@ def make_client(cfg: Config, fake: bool):
     if fake:
         from .client import FakeClient
         return FakeClient(model=cfg.model)
+    if getattr(cfg, "provider", "anthropic") == "openai":
+        from .client import OpenAICompatibleClient
+        return OpenAICompatibleClient(cfg.model, cfg.base_url, cfg.max_retries, os.environ.get("HARNESS_API_KEY_ENV", "OPENAI_API_KEY"))
     from .client import ModelClient
     return ModelClient(cfg.model, cfg.max_retries, cfg.prompt_caching)
 
@@ -35,7 +38,21 @@ def main(argv=None) -> None:
     ap.add_argument("--fake", action="store_true", help="use the deterministic fake client (no API calls)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--model", default=None, help="override the model identifier in the config (Gate 2 candidate screening)")
+    ap.add_argument("--answer-cap", type=int, default=None, help="override the reply token cap (models that spend the cap on thinking blocks)")
+    ap.add_argument("--teach-cap", type=int, default=None, help="override the teacher turn token cap")
+    ap.add_argument("--provider", choices=["anthropic", "openai"], default=None, help="v2: 'openai' uses any OpenAI-compatible endpoint (--base-url) with the key in OPENAI_API_KEY")
+    ap.add_argument("--base-url", default=None, help="v2: OpenAI-compatible endpoint, e.g. https://api.openai.com/v1")
+    ap.add_argument("--policy", choices=["mastery", "fixed"], default=None, help="v2: 'fixed' runs the non-adaptive fixed-sequence control instead of Algorithm 1")
+    ap.add_argument("--fixed-items", type=int, default=None, help="v2: items per component under the fixed-sequence policy (default 2)")
+    ap.add_argument("--pilot", default=None, help="v2: pilot_<set>.json whose difficulty_per_family feeds Item.difficulty")
+    ap.add_argument("--summary-after-posttest", action="store_true", help="v2: reproduce version 1, which summarised after the post-test")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("reprobe", help="v2: re-run the reference-arm boundary probe with the reference student's own summary")
+    p.add_argument("--runs", required=True, help="directory holding the finished run directories"); p.add_argument("--tag", default="main")
+    p.add_argument("--set", default="Y")
+    p = sub.add_parser("wording", help="v2: does the specification's wording cause the tether omission?")
+    p.add_argument("--set", default="Y"); p.add_argument("--n", type=int, default=30)
+    p.add_argument("--variants", nargs="*", default=None, help="subset of: spec instruction spec_merge_restated")
     p = sub.add_parser("probes"); p.add_argument("--set", required=True); p.add_argument("--n", type=int); p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", action="store_true", help="continue the most recent interrupted run of this command and set")
     p = sub.add_parser("pilot"); p.add_argument("--set", required=True); p.add_argument("--n", type=int); p.add_argument("--seed", type=int, default=0)
@@ -59,8 +76,40 @@ def main(argv=None) -> None:
         cfg.output_dir = a.out
     if a.model:
         cfg.model = a.model
+    if a.answer_cap:
+        cfg.answer_token_cap = a.answer_cap
+    if a.teach_cap:
+        cfg.teach_token_cap = a.teach_cap
+    if a.provider:
+        cfg.provider = a.provider
+    if a.base_url:
+        cfg.base_url = a.base_url
+    if a.policy:
+        cfg.policy = a.policy
+    if a.fixed_items:
+        cfg.fixed_items = a.fixed_items
+    if a.pilot:
+        cfg.pilot_difficulty = a.pilot
+    if a.summary_after_posttest:
+        cfg.summary_before_posttest = False
     os.makedirs(cfg.output_dir, exist_ok=True)
     client = make_client(cfg, a.fake)
+
+    def load_set(name):
+        c = load_content(name)
+        if cfg.pilot_difficulty:
+            pj = json.load(open(cfg.pilot_difficulty))
+            c.set_difficulty(pj.get("difficulty_per_family", {}))
+        return c
+
+    if a.cmd == "reprobe":
+        from .extras import reprobe
+        out = os.path.join(cfg.output_dir, "reprobe")
+        res = reprobe(client, load_set(a.set), cfg, a.runs, out, a.tag)
+        print(json.dumps(res, indent=1)); return
+    if a.cmd == "wording":
+        from .extras import wording
+        wording(client, load_set(a.set), cfg, cfg.output_dir, a.n, a.variants); return
 
     if a.cmd in ("probes", "pilot"):
         from .probes import run_probes, run_pilot, table3_rows
@@ -78,6 +127,7 @@ def main(argv=None) -> None:
         fn = run_probes if a.cmd == "probes" else run_pilot
         res = fn(client, content, cfg, tel, seed=a.seed, n=a.n, resume=a.resume)
         tel.close()
+        res["api_refusals"] = getattr(client, "total_refusals", 0)
         print(json.dumps({k: v for k, v in res.items() if k not in ("per_family",)}, indent=1))
         if res["parse_failure_rate"] > 0.05:
             print(f"\nWARNING: {res['parse_failure_rate']:.1%} of replies could not be parsed; the run is not a valid "
@@ -101,13 +151,16 @@ def main(argv=None) -> None:
         for name in ("probe_responses.jsonl", "pilot_responses.jsonl"):
             path = os.path.join(a.run, name)
             if os.path.exists(path):
-                fails = [json.loads(l) for l in open(path)]
-                fails = [f for f in fails if f["status"] == "failure"][:3]
-                for f in fails:
-                    print("\n--- unparsed reply for", f["item_id"], "---\n" + f["response"][-600:])
+                allr = [json.loads(l) for l in open(path)]
+                fails = [f for f in allr if f["status"] == "failure"]
+                print("stop reasons of unparsed replies:", dict(collections.Counter(f.get("stop_reason", "?") for f in fails)))
+                print("block types of unparsed replies:", dict(collections.Counter(f.get("block_types", "?") for f in fails)))
+                for f in fails[:3]:
+                    print("\n--- unparsed reply for", f["item_id"], "(", f.get("stop_reason", "?"), f.get("block_types", "?"), ") ---\n" + f["response"][-600:])
         return
+    elif a.cmd == "chain":
         from .chain import run_chain
-        content = load_content(a.set)
+        content = load_set(a.set)
         tel = Telemetry(cfg.output_dir, _run_id(f"chain-{a.set}-tau{a.tau}-s{a.seed}"))
         res = run_chain(client, content, cfg, a.tau, a.seed, not a.uncalibrated, tel)
         tel.close()
@@ -138,7 +191,7 @@ def main(argv=None) -> None:
 
         def run_cell(cell):
             rid, name, si, tau, calibrated, seed = cell
-            content = load_content(name)
+            content = load_set(name)
             import shutil
             d = os.path.join(cfg.output_dir, rid)
             if os.path.exists(d):
@@ -163,7 +216,7 @@ def main(argv=None) -> None:
         if not a.fake:
             print(json.dumps({"tokens_in": client.total_in, "tokens_out": client.total_out,
                               "cache_read": client.total_cache_read, "cache_write": client.total_cache_write,
-                              "retries": client.total_retries}))
+                              "retries": client.total_retries, "refusals": getattr(client, "total_refusals", 0)}))
 
 
 if __name__ == "__main__":

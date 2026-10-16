@@ -1,8 +1,15 @@
 """Instances and the message router with the isolation invariant
-(Section IV-B). The student context never contains the specification, an
-answer key, or the teacher's private reasoning. The check is an assertion on
-the byte content of the outgoing context, run on every turn; a violation
-raises IsolationViolation, which aborts the run and is counted."""
+(Section IV-B). The check is an assertion on the byte content of the
+outgoing context, run on every student turn; a violation raises
+IsolationViolation, which aborts the run and is counted.
+
+What the check catches, stated precisely (reviewer 2, item 10a): verbatim
+reproduction of any specification line of 40 or more characters, or of the
+answer-key markers. It does not catch a paraphrase of the specification,
+and it is not evidence that a teacher's explanation is free of the
+specification's content; teachers are expected to convey that content. The
+answer key itself never enters any prompt: it exists only in the harness
+side channel (`meta`)."""
 from __future__ import annotations
 import random
 from dataclasses import dataclass, field
@@ -74,5 +81,5 @@ class Router:
         self.turn_log.append({"to": inst.label, "role": inst.role, "tokens_in": comp.tokens_in,
                               "tokens_out": comp.tokens_out, "cache_read": getattr(comp, "cache_read", 0),
                               "cache_write": getattr(comp, "cache_write", 0), "latency_ms": comp.latency_ms,
-                              "retries": comp.retries, "model": comp.model})
+                              "retries": comp.retries, "refusals": getattr(comp, "refusals", 0), "model": comp.model})
         return comp

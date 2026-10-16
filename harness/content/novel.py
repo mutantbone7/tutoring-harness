@@ -1,5 +1,8 @@
-"""DRAFT content set Y: novel surface AND novel structure, for the author to
-review and freeze at Gate 0 (Section III-B).
+"""Content set Y: novel surface AND novel structure. Frozen at Gate 0 in commit
+814ddc1 (19 September 2026); the rules below are byte-identical to that commit.
+The module and specification headers of version 1 still carried the label
+"DRAFT, not frozen" from the Gate 0 review; the label was removed in version 2
+(reviewer 2, item 4e). No rule changed.
 
 Y mirrors R component for component (same six-node prerequisite graph, one
 family per component, two held-out families composed in the same orders),
@@ -20,7 +23,7 @@ The "cairn" system. A cairn has an integer height q and a stride k.
   C6 merge:   two cairns with shares w and 1-w (in tenths) and tether b in
               {-2..2}: floor(w q1) + floor((1-w) q2) + b * floor(min(q1,q2)/10)
 
-Nothing here is frozen. Gate 1 verifies that a cold model is at chance on Y;
+Gate 1 verifies that a cold model is at chance on Y;
 Gate 2 equates its difficulty with R and S by adjusting parameter ranges.
 """
 from __future__ import annotations
@@ -275,7 +278,7 @@ class OriginWithLeak(IntFamily):
         return item
 
 
-SPEC_Y = """SPECIFICATION: cairn rule system (DRAFT, not frozen)
+SPEC_Y = """SPECIFICATION: cairn rule system
 A cairn has a height in marks, a stride, and sometimes a leak. Heights, strides and leaks are whole numbers.
 Rule C1 (pulse): one pulse raises the height by the stride plus one mark for every full stride contained in the current height; a height of 20 with stride 6 becomes 20 + 6 + 3 = 29.
 Rule C2 (repeated pulses): pulses are applied one after another, and the count of full strides is taken afresh from the height at each pulse; there is no shortcut that uses the starting count for every pulse.

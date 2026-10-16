@@ -30,6 +30,16 @@ class Config:
     calibrated: bool = True
     learner: str = "bkt"                     # calibrated learner: "bkt" (bootstrap) or a GBDT .pkl path
     learner_uncalibrated: str = "bkt"        # uncalibrated learner for the calibration-off arm
+    # ---- v2 additions (resubmission). Defaults reproduce the study as run
+    # where a value is marked "as run"; the others are fixes that affect only
+    # new runs and are recorded in config.json of every run directory.
+    policy: str = "mastery"                  # "mastery" (Algorithm 1) or "fixed" (non-adaptive fixed-sequence control)
+    fixed_items: int = 2                     # items per component under the fixed-sequence policy
+    summary_before_posttest: bool = True     # v2 fix: summarise before the post-test. As run: False (reviewer 2, item 4g)
+    reference_summary: bool = True           # v2 fix: the reference student writes its own summary for its boundary probe. As run: the chain summary was used (bug; reviewer 2, item 7a)
+    pilot_difficulty: str = ""               # path to pilot_<set>.json; its difficulty_per_family feeds Item.difficulty (as run: not loaded, constant 0.5)
+    provider: str = "anthropic"              # "anthropic" or "openai" (any OpenAI-compatible endpoint; see client.py)
+    base_url: str = ""                       # OpenAI-compatible endpoint, e.g. https://api.openai.com/v1
 
     def save(self, path: str) -> None:
         with open(path, "w") as f:

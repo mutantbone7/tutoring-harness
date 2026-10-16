@@ -62,6 +62,8 @@ def main(argv=None) -> None:
     ap.add_argument("--calibration", choices=["none", "platt", "isotonic"], default="platt")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--condition-features", action="store_true", help="include tau, calibration, generation and arm as features (the study as run); v2 default excludes them")
+    ap.add_argument("--platt-penalty", choices=["l2", "none"], default="none", help="'l2' reproduces the study as run (default sklearn penalty); 'none' fits the unpenalised map (v2 default)")
     a = ap.parse_args(argv)
     dirs = [d for g in a.runs for d in glob.glob(g)]
     content = load_content(a.set)
@@ -78,7 +80,8 @@ def main(argv=None) -> None:
                        [y[i] for i in ica] if a.calibration != "none" else None,
                        None if a.calibration == "none" else a.calibration,
                        {c.id: i for i, c in enumerate(content.components())},
-                       {f.family_id: i for i, f in enumerate(content.families())})
+                       {f.family_id: i for i, f in enumerate(content.families())},
+                       condition_features=a.condition_features, platt_penalty=None if a.platt_penalty == "none" else "l2")
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     model.save(a.out)
     raw = model.model.predict_proba([X[i] for i in iev])[:, 1]

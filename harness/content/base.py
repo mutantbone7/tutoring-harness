@@ -130,6 +130,25 @@ class ContentSet:
     def held_out_families(self, component: Optional[str] = None) -> List[ItemFamily]:
         return [f for f in self.families() if f.held_out and (component is None or f.component == component)]
 
+    # --- pilot difficulty (Table 6, "difficulty estimate from the pilot") ------
+    # v2: the equating pilot writes difficulty_per_family (1 - accuracy) to
+    # pilot_<set>.json; set_difficulty() loads it so that Item.difficulty and the
+    # learner's next_difficulty feature carry it. In the study as run the mapping
+    # was never loaded, so the feature was the constant 0.5 (reviewer 2, item 2e).
+    _difficulty: Dict[str, float] = {}
+
+    def set_difficulty(self, per_family: Dict[str, float]) -> None:
+        self._difficulty = {k: float(v) for k, v in per_family.items() if v is not None}
+
+    def family_difficulty(self, family_id: str) -> float:
+        return self._difficulty.get(family_id, 0.5)
+
+    def next_family(self, component: str) -> str:
+        """The instructed family the next item of `component` is drawn from
+        (one instructed family per component in R, S and Y)."""
+        fams = self.instructed_families(component)
+        return fams[0].family_id if len(fams) == 1 else ""
+
     def sample_item(self, component: str, rng: random.Random, held_out: bool = False) -> Item:
         fams = self.held_out_families(component) if held_out else self.instructed_families(component)
         if not fams:
@@ -137,6 +156,7 @@ class ContentSet:
         fam = rng.choice(fams)
         item = fam.sample(rng)
         item.held_out = fam.held_out
+        item.difficulty = self.family_difficulty(fam.family_id)
         return item
 
     # --- structural distinctness (Section III-E) ------------------------------

@@ -137,3 +137,25 @@ def test_probes_and_pilot_statistics():
         res2 = run_pilot(FakeClient(base_p=0.6, gain=0.0), content, cfg, tel, seed=0, n=24)
         assert set(res2["difficulty_per_family"]) <= {"scale", "repeat", "offset"}
         tel.close()
+
+
+def test_probes_resume_continues_same_items_without_repeating_calls():
+    content = load_content("demo"); cfg = cfg_small()
+    with tempfile.TemporaryDirectory() as d:
+        tel = Telemetry(d, "p")
+        fake = FakeClient(base_p=0.3, gain=0.0)
+        run_probes(fake, content, cfg, tel, seed=5, n=10)                 # a "full" run of 10
+        full_ids = [r["item_id"] for r in tel.rows]
+        tel.close()
+        tel2 = Telemetry(d, "q")
+        fake2 = FakeClient(base_p=0.3, gain=0.0)
+        run_probes(fake2, content, cfg, tel2, seed=5, n=4)                # interrupted after 4
+        tel2.close()
+        tel3 = Telemetry(d, "q")                                          # same run dir, append
+        fake3 = FakeClient(base_p=0.3, gain=0.0)
+        res = run_probes(fake3, content, cfg, tel3, seed=5, n=10, resume=True)
+        tel3.close()
+        import json
+        rows = [json.loads(l) for l in open(os.path.join(tel3.dir, "telemetry.jsonl"))]
+        assert [r["item_id"] for r in rows] == full_ids                  # identical item sequence
+        assert len(fake3.calls) == 6 and res["n"] == 10                   # only the missing 6 were called
