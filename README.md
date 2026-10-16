@@ -41,6 +41,7 @@ Version-2 commands (all accept `--fake`):
     python -m harness.cli --policy fixed sweep --sets Y --seeds 1 2 3 4 5 6 --taus 0.85 --calibration on --generations 1 --tag fixed
     python -m harness.cli reprobe --runs runs --tag main --set Y
     python -m harness.cli wording --set Y --n 30
+    python -m harness.cli wording --set Y --n 30 --resume      # continue an interrupted wording run
     python -m harness.cli --provider openai --base-url https://api.openai.com/v1 --model gpt-4.1-mini probes --set Y --n 200
     python -m harness.export packet    --runs runs --sample analysis/coding_sample.json --out coding
     python -m harness.export rater     --runs runs --sample analysis/coding_sample.json --out coding_rater2 --n 20
@@ -114,7 +115,14 @@ that prompted it:
   (version 1's packet cut summaries at 1,200 characters, item 4f).
 * `extras.py`: `reprobe` re-runs the reference-arm boundary probe with the
   reference student's own summary; `wording` tests whether the
-  specification's wording causes the tether omission (item 4d).
+  specification's wording causes the tether omission (item 4d), and can
+  resume an interrupted run from its `replies.jsonl` (`--resume`).
+* `tools/` (archive only): `wording_coding.py` scores the wording test
+  with the detector and records the three-way reading of the
+  specification-context rule statements; `analyze_v2runs.py` produces the
+  quantities reported from the October runs; `rater_agreement.py` computes
+  the second rater's agreement; `highlight_changes.py` built the
+  highlighted PDF.
 * `client.py`: `OpenAICompatibleClient` for a second provider (reviewer 3).
 
 ## Isolation check, stated precisely

@@ -71,7 +71,42 @@ def reprobe(client, content, cfg, runs_dir: str, out_dir: str, tag: str = "main"
     return {"sessions": done, "probe_rows": rows, "tokens_in": client.total_in, "tokens_out": client.total_out}
 
 
-def wording(client, content, cfg, out_dir: str, n: int = 30, variants: List[str] = None) -> Dict:
+def _wording_status(path: str, components: List[str]) -> Dict:
+    """Read a replies.jsonl and return, per (variant, teacher), the last
+    record seen for each component. A teacher counts as complete when all
+    components have a record; the omission is scored from its last C6 record."""
+    last = {}
+    if os.path.exists(path):
+        for line in open(path):
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            last.setdefault((r["variant"], r["teacher"]), {})[r["component"]] = r
+    status = {}
+    for key, recs in last.items():
+        complete = all(c in recs for c in components)
+        status[key] = {"complete": complete, "scaling_stated": recs["C6"]["scaling_stated"] if complete else None}
+    return status
+
+
+def _wording_counts(status: Dict, variants: List[str]) -> Dict:
+    counts = {v: {"omitted": 0, "of": 0} for v in variants}
+    for (v, _), st in status.items():
+        if v in counts and st["complete"]:
+            counts[v]["of"] += 1
+            counts[v]["omitted"] += int(not st["scaling_stated"])
+    return counts
+
+
+def wording(client, content, cfg, out_dir: str, n: int = 30, variants: List[str] = None, resume: str = None) -> Dict:
+    """`resume` continues an interrupted run: the path of its directory, or
+    "latest" for the most recent wording-<set>-* directory under out_dir.
+    Teachers whose six replies are already on disk are skipped; a teacher
+    that was cut off part-way is run again from its first prompt (its
+    context cannot be rebuilt exactly), and the later records supersede the
+    earlier ones when the file is read back. Records written by a resumed
+    run carry "resumed": true."""
     from .revision import tether_scaling_stated
     from .content.novel import SPEC_Y, INSTRUCTION_Y
     merge_line = next(l for l in INSTRUCTION_Y.splitlines() if l.startswith("Merge:"))
@@ -80,24 +115,50 @@ def wording(client, content, cfg, out_dir: str, n: int = 30, variants: List[str]
          if l.startswith("Rule C6") else l) for l in SPEC_Y.splitlines())
     texts = {"spec": SPEC_Y, "instruction": INSTRUCTION_Y, "spec_merge_restated": spec_merge_restated}
     variants = variants or list(texts)
-    run_id = f"wording-{content.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    components = content.topo_order()
+    if resume:
+        if resume == "latest":
+            prev = sorted(glob.glob(os.path.join(out_dir, f"wording-{content.name}-*")))
+            if not prev:
+                raise SystemExit(f"nothing to resume: no wording-{content.name}-* directory in {out_dir}")
+            run_dir = prev[-1]
+        else:
+            run_dir = resume
+        run_id = os.path.basename(os.path.normpath(run_dir))
+        out_dir = os.path.dirname(os.path.normpath(run_dir)) or out_dir
+        mode = "a"
+    else:
+        run_id = f"wording-{content.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+        mode = "w"
     tel = Telemetry(out_dir, run_id)
     router = Router(client, set())
-    out_path = os.path.join(tel.dir, "replies.jsonl"); counts = {}
-    with open(out_path, "w") as f:
+    out_path = os.path.join(tel.dir, "replies.jsonl")
+    status = _wording_status(out_path, components) if resume else {}
+    if resume:
+        done = sum(1 for st in status.values() if st["complete"])
+        print(f"resuming {run_id}: {done} complete teachers on disk", flush=True)
+    with open(out_path, mode) as f:
         for v in variants:
-            omitted = taught = 0
             for i in range(n):
+                if status.get((v, i), {}).get("complete"):
+                    continue
                 teacher = instantiate("teacher", f"W-{v}-{i}", 1000 + i, cfg.model, context=texts[v])
-                for c in content.topo_order():
+                recs = {}
+                for c in components:
                     reply = router.send(teacher, TEACH_PROMPT.format(name=content.graph()[c].name), cfg.teach_token_cap).text
                     rec = {"variant": v, "teacher": i, "component": c, "reply": reply, "served_model": teacher.served_model}
+                    if resume:
+                        rec["resumed"] = True
                     if c == "C6":
-                        rec["scaling_stated"] = tether_scaling_stated(reply); taught += 1; omitted += int(not rec["scaling_stated"])
+                        rec["scaling_stated"] = tether_scaling_stated(reply)
                     f.write(json.dumps(rec) + "\n"); f.flush()
-                print(f"{v} teacher {i + 1}/{n}: omitted so far {omitted}/{taught}", flush=True)
-            counts[v] = {"omitted": omitted, "of": taught}
-    tel.write_json("wording_summary.json", {"counts": counts, "variants": {k: texts[k] for k in variants}, "turns": router.turn_log})
+                    recs[c] = rec
+                status[(v, i)] = {"complete": True, "scaling_stated": recs["C6"]["scaling_stated"]}
+                cnt = _wording_counts(status, [v])[v]
+                print(f"{v} teacher {i + 1}/{n}: omitted so far {cnt['omitted']}/{cnt['of']}", flush=True)
+    counts = _wording_counts(status, variants)
+    tel.write_json("wording_summary.json", {"counts": counts, "variants": {k: texts[k] for k in variants}, "turns": router.turn_log,
+                                            "resumed": bool(resume)})
     tel.close()
     print(json.dumps(counts, indent=1))
     return counts

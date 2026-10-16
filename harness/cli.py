@@ -53,6 +53,8 @@ def main(argv=None) -> None:
     p = sub.add_parser("wording", help="v2: does the specification's wording cause the tether omission?")
     p.add_argument("--set", default="Y"); p.add_argument("--n", type=int, default=30)
     p.add_argument("--variants", nargs="*", default=None, help="subset of: spec instruction spec_merge_restated")
+    p.add_argument("--resume", nargs="?", const="latest", default=None, metavar="DIR",
+                   help="continue an interrupted wording run: its directory, or no value for the most recent one")
     p = sub.add_parser("probes"); p.add_argument("--set", required=True); p.add_argument("--n", type=int); p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", action="store_true", help="continue the most recent interrupted run of this command and set")
     p = sub.add_parser("pilot"); p.add_argument("--set", required=True); p.add_argument("--n", type=int); p.add_argument("--seed", type=int, default=0)
@@ -109,7 +111,7 @@ def main(argv=None) -> None:
         print(json.dumps(res, indent=1)); return
     if a.cmd == "wording":
         from .extras import wording
-        wording(client, load_set(a.set), cfg, cfg.output_dir, a.n, a.variants); return
+        wording(client, load_set(a.set), cfg, cfg.output_dir, a.n, a.variants, resume=a.resume); return
 
     if a.cmd in ("probes", "pilot"):
         from .probes import run_probes, run_pilot, table3_rows
